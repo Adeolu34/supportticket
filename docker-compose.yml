@@ -1,0 +1,96 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: support
+      POSTGRES_PASSWORD: support_pass
+      POSTGRES_DB: support_ticket
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5435:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U support -d support_ticket"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6382:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8004 --reload
+    ports:
+      - "8004:8004"
+    env_file: .env.example
+    environment:
+      DATABASE_URL: postgresql+asyncpg://support:support_pass@postgres:5432/support_ticket
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - .:/app
+      - screenshots_data:/app/screenshots
+      - models_data:/app/models
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build: .
+    command: celery -A app.tasks.celery_app worker --loglevel=info --concurrency=4
+    env_file: .env.example
+    environment:
+      DATABASE_URL: postgresql+asyncpg://support:support_pass@postgres:5432/support_ticket
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - .:/app
+      - screenshots_data:/app/screenshots
+      - models_data:/app/models
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  beat:
+    build: .
+    command: celery -A app.tasks.celery_app beat --loglevel=info --scheduler celery.beat:PersistentScheduler
+    env_file: .env.example
+    environment:
+      DATABASE_URL: postgresql+asyncpg://support:support_pass@postgres:5432/support_ticket
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - .:/app
+    depends_on:
+      - redis
+
+  flower:
+    build: .
+    command: celery -A app.tasks.celery_app flower --port=5555 --broker=redis://redis:6379/0
+    ports:
+      - "5557:5555"
+    env_file: .env.example
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      - redis
+
+volumes:
+  postgres_data:
+  redis_data:
+  screenshots_data:
+  models_data:
